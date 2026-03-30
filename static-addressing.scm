@@ -89,10 +89,8 @@
 (define (vector-cons val vec)
   (let ((result (make-vector (1+ (vector-length vec)))))
     (vector-set! result 0 val)
-    (do ((vec-i 0 (1+ vec-i))
-	 (result-i 1 (1+ result-i)))
-	((= vec-i (vector-length vec)) result)
-      (vector-set! result result-i (vector-ref vec vec-i)))))
+    (vector-copy! result 1 vec)
+    result))
 
 (define (and-print v)
   (format #t "and print: ~a\n" v)
