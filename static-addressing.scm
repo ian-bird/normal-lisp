@@ -53,7 +53,7 @@
 	    (unless binding
               (add-global-binding! env var)
 	      (set! binding (assoc var (cadr env))))
-	    (lambda (_)
+	    (lambda (_env)
               binding))))))
 
 (define (run-code . statements)
@@ -101,13 +101,21 @@
 	(unless (symbol? exn)
 	  (raise-exception exn))
 	(if (with-exception-handler
-		    (lambda (exn) #f)
-		  (lambda () (eval exn (current-module)) #t)
-		  #:unwind? #t)
+		(lambda (exn) #f)
+	      (lambda () (eval exn (current-module)) #t)
+	      #:unwind? #t)
 	    (format #t "warning: using host environment variable ~a\n" exn)
 	    (format #t "warning: potentially unbound variable ~a\n" exn)))
     (lambda ()
-      (compile-statement s env))))
+      (lambda (runtime-env k)
+	(with-exception-handler
+	    (lambda (exn)
+	      (unless (and (list? exn) (eq? (car exn) 'jump))
+		(raise-exception exn))
+	      (cadr exn))
+	  (lambda ()
+	    ((compile-statement s env) runtime-env k))
+	  #:unwind? #t)))))
 
 ;; analyzes the code, combining lambdas into a fn that produces the desired behavior.
 ;; compiling thus splits syntactical analysis / symbol location from executing the code.
@@ -127,13 +135,13 @@
                  (k (if (and p (not (null? (cdr p)))) (cadr p) (eval s (current-module))))))))
           ((any? (lambda (proc) (proc s)) (list boolean? string? number?) )
            ;; self-evaluating. pass value to k directly.
-           (lambda (_ k) (k s)))
+           (lambda (_env k) (k s)))
           ((list? s)
            (case (car s)
                  ((quote) (check-arity 1)
                   (let ((v (cadr s)))
                     ;; pass 2nd value to k directly.
-                    (lambda (_ k) (k v))))
+                    (lambda (_env k) (k v))))
                  ((car) (check-arity 1)
                   (let ((a1 (compile-statement (cadr s) example-env)))
                     ;; evaluate argument, car it, then pass to k.
@@ -183,7 +191,7 @@
                                                     (let ((r (loop (cdr statements))))
                                                       ;; if there's more statements, evaluate this one, discard the
                                                       ;; result and go to the next one.
-                                                      (lambda (env k) ((car statements) env (lambda (_) (r env k)))))))))
+                                                      (lambda (env k) ((car statements) env (lambda (_args) (r env k)))))))))
                     ;; pass lambda to k directly
                     (lambda (creation-env k)
 		      (k (lambda args
@@ -221,11 +229,28 @@
                  ((set!) (check-arity 2)
                   (let ((find-pair (get-assoc example-env (cadr s)))
                         (rval (compile-statement (caddr s) example-env)))
-                    ;; eval argument, store it in the appropriate cell in env, then call k with null
+                    ;; eval argument, store it in the appropriate cell
+                    ;; in env, then call k with null
                     (lambda (env k)
                       (rval env (lambda (r)
-                                  (set-cdr! (find-pair env) (list r))
+				  ;; variables must exist for them to
+				  ;; be settable. unbound variables
+				  ;; dont really exist, so we cant use
+				  ;; them either.
+				  (if (and (find-pair env) (not (null? (cdr (find-pair env)))))
+                                      (set-cdr! (find-pair env) (list r))
+				      (error (string-append "cannot set unbound variable "
+							    (symbol->string (cadr s)))))
                                   (k '()))))))
+		 ((call/cc) (check-arity 1)
+		  ;; compile the lambda 2nd argument
+		  (let ((fn (compile-statement (cadr s) example-env)))
+		    (lambda (env k)
+		      (k (fn env	; evaluate the lambda, get the
+					; actual thing in f
+			     (lambda (f)
+			       (f (lambda (v)
+				    (raise-exception (list 'jump (k v)))))))))))
                  (else			;fn application
                   (letrec ((fn (compile-statement (car s) example-env))
                            (args (map (lambda (s) (compile-statement s example-env))
