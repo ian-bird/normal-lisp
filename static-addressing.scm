@@ -60,7 +60,7 @@
   (let ((env (list #() '()))
         (result '()))
     (for-each (lambda (statement)
-		(set! result ((compile-statement statement env) env identity)))
+		(set! result ((comp statement env) env identity)))
 	      statements)
     result))
 
@@ -69,7 +69,8 @@
 ;; anything not in the lexical scope at compile time must be present here.
 (define (add-global-binding! env var)
   (if (null? (cadr env))
-      (set-car! (cdr env) (list (list var)))
+      (begin (raise-exception var #:continuable? #t)
+	     (set-car! (cdr env) (list (list var))))
       (set-cdr! (last-pair (cadr env)) (list (list var)))))
 
 (define (map-args params args)
@@ -86,19 +87,30 @@
 			   (cons params args)
 			   (list (car params) (car args)))))))
 
+
+
 (define (vector-cons val vec)
   (let ((result (make-vector (1+ (vector-length vec)))))
     (vector-set! result 0 val)
     (vector-copy! result 1 vec)
     result))
 
-(define (and-print v)
-  (format #t "and print: ~a\n" v)
-  v)
+(define (comp s env)
+  (with-exception-handler
+      (lambda (exn)
+	(unless (symbol? exn)
+	  (raise-exception exn))
+	(if (with-exception-handler
+		    (lambda (exn) #f)
+		  (lambda () (eval exn (current-module)) #t)
+		  #:unwind? #t)
+	    (format #t "warning: using host environment variable ~a\n" exn)
+	    (format #t "warning: potentially unbound variable ~a\n" exn)))
+    (lambda ()
+      (compile-statement s env))))
 
-;; walks the code, combining lambdas into a fn that produces the desired behavior.
+;; analyzes the code, combining lambdas into a fn that produces the desired behavior.
 ;; compiling thus splits syntactical analysis / symbol location from executing the code.
-;; compilation yields a 5x speedup over naive interpretation.
 (define (compile-statement s example-env)
   (let ((check-arity (lambda (n)
                        (unless (= (length s) (1+ n)) 
@@ -190,14 +202,21 @@
                     ;; eval argument, store it in env, then call k with null
                     (lambda (env k)
                       (rval env (lambda (r)
-                                  (let ((binding (assoc (cadr s) (cadr env))))
-				    (if binding
-					(if (null? (cdr binding))
-					    (set-cdr! binding (list r))
-					    (error (string-append (symbol->string (cadr s))
-								  " is already defined!")))
-					(begin (add-global-binding! env (cadr s))
-					       (set-cdr! (assoc (cadr s) (cadr env)) (list r)))))
+				  (with-exception-handler
+				      (lambda (exn)
+					(unless (symbol? exn)
+					  (raise-exception exn))
+					(unless (eq? exn (cadr s))
+					  (raise-exception exn #:continuable? #t)))
+				    (lambda ()
+                                      (let ((binding (assoc (cadr s) (cadr env))))
+					(if binding
+					    (if (null? (cdr binding))
+						(set-cdr! binding (list r))
+						(error (string-append (symbol->string (cadr s))
+								      " is already defined!")))
+					    (begin (add-global-binding! env (cadr s))
+						   (set-cdr! (assoc (cadr s) (cadr env)) (list r)))))))
                                   (k '()))))))
                  ((set!) (check-arity 2)
                   (let ((find-pair (get-assoc example-env (cadr s)))
