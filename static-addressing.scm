@@ -68,9 +68,9 @@
 ;; since define can only run in the global level,
 ;; anything not in the lexical scope at compile time must be present here.
 (define (add-global-binding! env var)
+  (raise-exception var #:continuable? #t)
   (if (null? (cadr env))
-      (begin (raise-exception var #:continuable? #t)
-	     (set-car! (cdr env) (list (list var))))
+      (set-car! (cdr env) (list (list var)))
       (set-cdr! (last-pair (cadr env)) (list (list var)))))
 
 (define (map-args params args)
@@ -80,11 +80,11 @@
 				((symbol? params) (1+ c))
 				(else (loop (cdr params) (1+ c))))))))
     (do ((params params (if (symbol? params) params (cdr params)))
-	 (args args (cdr args))
+	 (args args (if (null? args) '() (cdr args)))
 	 (i 0 (1+ i)))
 	((>= i (vector-length v)) v)
       (vector-set! v i (if (symbol? params)
-			   (cons params args)
+			   (list params args)
 			   (list (car params) (car args)))))))
 
 
@@ -111,8 +111,8 @@
 		      (lambda (exn) #f)
 		    (lambda () (eval exn (current-module)) #t)
 		    #:unwind? #t)
-		  (format #t "warning: using host environment variable ~a\n" exn)
-		  (format #t "warning: potentially unbound variable ~a\n" exn)))
+		  (format #t "warning: using host environment variable '~a'\n" exn)
+		  (format #t "warning: potentially unbound variable '~a'\n" exn)))
 	  (lambda ()
 	    ((compile-statement s env) runtime-env k))))
       #:unwind? #t)))
@@ -176,7 +176,13 @@
 			 ;; this is the compile-time environment, with
 			 ;; all variables unbound. This is primarily
 			 ;; used to build the accessor functions at compile-time.
-                         (extended-env (extend-env example-env (make-list (length (cadr s)) '())))
+                         (extended-env (extend-env example-env (make-list (let loop ((params (cadr s))
+										     (n 0))
+									    (cond ((null? params) n)
+										  ((symbol? params) (1+ n))
+										  (else (loop (cdr params)
+											      (1+ n)))))
+									  '())))
 			 ;; compile all the statements in the body of
 			 ;; the lambda.
                          (compiled-statements (map (lambda (s) (compile-statement s extended-env)) (cddr s)))
@@ -195,7 +201,12 @@
                     ;; pass lambda to k directly
                     (lambda (creation-env k)
 		      (k (lambda args
-                           (unless (= (length (cadr s)) (length args))
+			   (unless (let loop ((params (cadr s))
+					      (args args))
+				     (cond ((null? params) (null? args))
+					   ((symbol? params) #t)
+					   ((null? args) #f)
+					   (else (loop (cdr params) (cdr args)))))
                              (error "arity mismatch"))
                            ;; eval each statement and return the last
 			   ;; as result, and eval them under the
@@ -206,26 +217,47 @@
                  ((define) (check-arity 2)
 		  (when (positive? (vector-length (car example-env)))
 		    (error "use of define within non-global scope"))
-                  (let ((rval (compile-statement (caddr s) example-env)))
+                  (let* (		; catch self def looks for
+					; exceptions raised for
+					; potentially undefined
+					; symbols referencing the one
+					; were about to create. Any of
+					; those we encounter we can supress.
+			 (catch-self-def (lambda (maybe-throws)
+					   (with-exception-handler
+					       (lambda (exn)
+						 (unless (symbol? exn)
+						   (raise-exception exn))
+						 (unless (eq? exn (cadr s))
+						   (raise-exception exn #:continuable? #t)))
+					     maybe-throws)))
+			 (rval (catch-self-def (lambda ()
+						 (compile-statement (caddr s) example-env)))))
                     ;; eval argument, store it in env, then call k with null
                     (lambda (env k)
                       (rval env (lambda (r)
-				  (with-exception-handler
-				      (lambda (exn)
-					(unless (symbol? exn)
-					  (raise-exception exn))
-					(unless (eq? exn (cadr s))
-					  (raise-exception exn #:continuable? #t)))
-				    (lambda ()
-                                      (let ((binding (assoc (cadr s) (cadr env))))
-					(if binding
-					    (if (null? (cdr binding))
-						(set-cdr! binding (list r))
-						(error (string-append (symbol->string (cadr s))
-								      " is already defined!")))
-					    (begin (add-global-binding! env (cadr s))
-						   (set-cdr! (assoc (cadr s) (cadr env)) (list r)))))))
-                                  (k '()))))))
+				  (let ((binding (assoc (cadr s) (cadr env))))
+				    ;;  if the binding exists and has
+				    ;;  been bound, error. definition
+				    ;;  to an existant value is
+				    ;;  invalid.
+				    (if binding
+					(begin
+					  (unless (null? (cdr binding))
+					    (error (string-append (symbol->string (cadr s))
+								  " is already defined!")))
+					  ;; if its just uninitialized then we can define it
+					  (set-cdr! binding (list r)))
+					(catch-self-def
+					 (lambda ()
+					   ;;  add the global binding
+					   ;;  to the current env
+					   ;;  using the current name
+					   ;;  and the evaluation
+					   ;;  result of the 2nd arg
+					   (add-global-binding! env (cadr s))
+					   (set-cdr! (assoc (cadr s) (cadr env)) (list r)))))
+				    (k '())))))))
                  ((set!) (check-arity 2)
                   (let ((find-pair (get-assoc example-env (cadr s)))
                         (rval (compile-statement (caddr s) example-env)))
@@ -249,6 +281,21 @@
 		      (k (fn env	; evaluate the lambda, get the
 					; actual thing in f
 			     (lambda (f)
+			       ;; pass a continuation into f. This
+			       ;; works because the current
+			       ;; continuation is already fully
+			       ;; reified due to the design of the
+			       ;; interpreter. However, if this
+			       ;; function is ever called, we need to
+			       ;; take the result and return it
+			       ;; immediately, no matter where we
+			       ;; are. The other optional path of flow
+			       ;; continuing as normal is aborted, and
+			       ;; since we have the result already
+			       ;; from the alternate path to k, we
+			       ;; just need to jump out of the
+			       ;; computation entirely and return
+			       ;; that.
 			       (f (lambda (v)
 				    (raise-exception (list 'jump (k v)))))))))))
                  (else			;fn application
