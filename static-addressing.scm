@@ -96,26 +96,26 @@
     result))
 
 (define (comp s env)
-  (with-exception-handler
-      (lambda (exn)
-	(unless (symbol? exn)
-	  (raise-exception exn))
-	(if (with-exception-handler
-		(lambda (exn) #f)
-	      (lambda () (eval exn (current-module)) #t)
-	      #:unwind? #t)
-	    (format #t "warning: using host environment variable ~a\n" exn)
-	    (format #t "warning: potentially unbound variable ~a\n" exn)))
-    (lambda ()
-      (lambda (runtime-env k)
+  (lambda (runtime-env k)
+    (with-exception-handler
+	(lambda (exn)
+	  (unless (and (list? exn) (eq? (car exn) 'jump))
+	    (raise-exception exn))
+	  (cadr exn))
+      (lambda ()
 	(with-exception-handler
 	    (lambda (exn)
-	      (unless (and (list? exn) (eq? (car exn) 'jump))
+	      (unless (symbol? exn)
 		(raise-exception exn))
-	      (cadr exn))
+	      (if (with-exception-handler
+		      (lambda (exn) #f)
+		    (lambda () (eval exn (current-module)) #t)
+		    #:unwind? #t)
+		  (format #t "warning: using host environment variable ~a\n" exn)
+		  (format #t "warning: potentially unbound variable ~a\n" exn)))
 	  (lambda ()
-	    ((compile-statement s env) runtime-env k))
-	  #:unwind? #t)))))
+	    ((compile-statement s env) runtime-env k))))
+      #:unwind? #t)))
 
 ;; analyzes the code, combining lambdas into a fn that produces the desired behavior.
 ;; compiling thus splits syntactical analysis / symbol location from executing the code.
@@ -269,3 +269,5 @@
                         (fn env (lambda (fn)
                                   (evaled-args env (lambda (args)
                                                      (k (apply fn args)))))))))))))))
+
+
