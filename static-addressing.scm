@@ -381,7 +381,7 @@
 				      (set-cdr! (find-pair env) (list r))
 				      (error (string-append "cannot set unbound variable "
 							    (symbol->string (cadr s)))))
-				  '())))))
+				  (k '()))))))
 		 ;; call/cc is a full implementation of the
 		 ;; feature. Continuations are re-entrant, and save
 		 ;; the full context. This is because at the point
