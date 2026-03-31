@@ -8,6 +8,26 @@
       #t
       #f))
 
+;; add an unbound definition to the global environment
+;; since define can only run in the global level,
+;; anything not in the lexical scope at compile time must be present here.
+;; 
+;; the exception that is raised should always be caught by a
+;; non-unwinding exception handle. It's to be treated as a warning,
+;; that code higher up in the dynamic stack has the ability to
+;; intercept and modify on its way up to the final logger.
+(define (add-global-binding! env var)
+  (raise-exception var #:continuable? #t)
+  (if (null? (cadr env))
+      (set-car! (cdr env) (list (list var)))
+      (set-cdr! (last-pair (cadr env)) (list (list var)))))
+
+(define (add-macro-binding! env var)
+  (raise-exception var #:continuable? #t)
+  (if (null? (caddr env))
+      (set-car! (cddr env) (list (list var)))
+      (set-cdr! (last-pair (caddr env)) (list (list var)))))
+
 ;; creates a lookup function to get the variable mentioned.
 ;;
 ;; this returns a lambda that locates the variable in constant time,
@@ -59,57 +79,6 @@
 	    (lambda (_env)
               binding))))))
 
-(define (run-code . statements)
-  (let ((env (list #() '() '()))
-        (result '()))
-    (for-each (lambda (statement)
-		(set! result ((comp statement env) env identity)))
-	      statements)
-    result))
-
-
-
-;; add an unbound definition to the global environment
-;; since define can only run in the global level,
-;; anything not in the lexical scope at compile time must be present here.
-;; 
-;; the exception that is raised should always be caught by a
-;; non-unwinding exception handle. It's to be treated as a warning,
-;; that code higher up in the dynamic stack has the ability to
-;; intercept and modify on its way up to the final logger.
-(define (add-global-binding! env var)
-  (raise-exception var #:continuable? #t)
-  (if (null? (cadr env))
-      (set-car! (cdr env) (list (list var)))
-      (set-cdr! (last-pair (cadr env)) (list (list var)))))
-
-(define (add-macro-binding! env var)
-  (raise-exception var #:continuable? #t)
-  (if (null? (caddr env))
-      (set-car! (cddr env) (list (list var)))
-      (set-cdr! (last-pair (caddr env)) (list (list var)))))
-
-(define (map-args params args)
-  (let ((v (make-vector (let loop ((params params)
-				   (c 0))
-                          (cond ((null? params) c)
-				((symbol? params) (1+ c))
-				(else (loop (cdr params) (1+ c))))))))
-    (do ((params params (if (symbol? params) params (cdr params)))
-	 (args args (if (null? args) '() (cdr args)))
-	 (i 0 (1+ i)))
-	((>= i (vector-length v)) v)
-      (vector-set! v i (if (symbol? params)
-			   (list params args)
-			   (list (car params) (car args)))))))
-
-
-
-(define (vector-cons val vec)
-  (let ((result (make-vector (1+ (vector-length vec)))))
-    (vector-set! result 0 val)
-    (vector-copy! result 1 vec)
-    result))
 
 ;;  this wraps compile-statement in the appropriate error handling
 ;;  code.Warnings are caught, its determined whether the host has the
@@ -142,20 +111,50 @@
 	    ((compile-statement s env) runtime-env k))))
       #:unwind? #t)))
 
+(define (run-code . statements)
+  (let ((env (list #() '() '()))
+        (result '()))
+    (for-each (lambda (statement)
+		(set! result ((comp statement env) env identity)))
+	      statements)
+    result))
+
+(define (map-args params args)
+  (let ((v (make-vector (let loop ((params params)
+				   (c 0))
+                          (cond ((null? params) c)
+				((symbol? params) (1+ c))
+				(else (loop (cdr params) (1+ c))))))))
+    (do ((params params (if (symbol? params) params (cdr params)))
+	 (args args (if (null? args) '() (cdr args)))
+	 (i 0 (1+ i)))
+	((>= i (vector-length v)) v)
+      (vector-set! v i (if (symbol? params)
+			   (list params args)
+			   (list (car params) (car args)))))))
+
+
+
+(define (vector-cons val vec)
+  (let ((result (make-vector (1+ (vector-length vec)))))
+    (vector-set! result 0 val)
+    (vector-copy! result 1 vec)
+    result))
+
 (define-syntax cps
   (syntax-rules ()
-    ((_ (external-name result-name) (external-name* result-name*)... final-form)
+    ((_  (env k) name name* ... final-form)
+     (name env (lambda (name)
+		 (cps (env k) name* ... final-form))))
+    ((_ (_ k) final-form)
+     (k final-form))
+    ((_ name name* ... final-form)
      (lambda (env k)
-       (external-name env (lambda (result-name)
-			    (cps env k (external-name* result-name*)... final-form)))))
+       (name env (lambda (name)
+		   (cps (env k) name* ... final-form)))))
     ((_  final-form)
      (lambda (_ k)
-       (k final-form)))
-    ((_  env k (external-name result-name) (external-name* result-name*)... final-form)
-     (external-name env (lambda (result-name)
-			  (cps env k (external-name* result-name*)... final-form))))
-    ((_ _ k final-form)
-     (k final-form))))
+       (k final-form)))))
 
 ;; analyzes the code, combining lambdas into a fn that produces the
 ;; desired behavior.  compiling thus splits syntactical analysis /
@@ -204,16 +203,16 @@
                  ((car) (check-arity 1)
                   (let ((a1 (compile-statement (cadr s) example-env)))
                     ;; evaluate argument, car it, then pass to k.
-		    (cps (a1 v1) (car v1))))
+		    (cps a1 (car a1))))
                  ((cdr) (check-arity 1)
                   (let ((a1 (compile-statement (cadr s) example-env)))
                     ;; evaluate argument, cdr it, then pass to k.
-                    (cps (a1 v1) (cdr v1))))
+                    (cps a1 (cdr a1))))
                  ((cons) (check-arity 2)
                   (let ((a1 (compile-statement (cadr s) example-env))
                         (a2 (compile-statement (caddr s) example-env)))
                     ;; evaluate both args, cons them, then pass to k.
-                    (cps (a1 v1) (a2 v2) (cons v1 v2))))
+                    (cps a1 a2 (cons a1 a2))))
                  ((if) (check-arity 3)
                   (let ((a1 (compile-statement (cadr s) example-env))
                         (a2 (compile-statement (caddr s) example-env))
@@ -448,12 +447,12 @@
 					     (cps '())
 					     (let ((f (car args))
 						   (r (eval-args (cdr args))))
-					       (cps (f f) (r r) (cons f r)))))))
+					       (cps f r (cons f r)))))))
 		     (let ((evaled-args (eval-args args)))
 		       ;; eval the function, then eval the
 		       ;; args, then apply the fn and pass
 		       ;; the result to k
-		       (cps (fn fn) (evaled-args args) (apply fn args))))
+		       (cps fn evaled-args (apply fn evaled-args))))
 		   (let* ((macro (cadr (assoc (car s) (caddr example-env))))
 			  (args (cdr s))
 			  (expansion (apply macro args)))
