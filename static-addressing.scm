@@ -184,12 +184,16 @@
              ;; if found then pass to k, otherwise eval and pass to k.
              (lambda (env k) 
                (let ((p (find-pair env)))
-                 (k (if  (null? (cdr p))
+                 (k (if  (null? (cdr p)) ; this if block doesnt recur so TCO works here
 			 (begin
                            (when (assoc s (caddr env))
 			     (error (format #f "cannot use macro '~a' as variable"
 					    (symbol->string s))))
-			   (eval s (current-module)))
+			   (let ((host (eval s (current-module))))
+			     (if (procedure? host)
+				 (lambda (k . args)
+				   (k (apply host args)))
+				 host)))
 			 (cadr p)))))))
           ((any? (lambda (proc) (proc s)) (list boolean? string? number?) )
            ;; self-evaluating. pass value to k directly.
@@ -219,7 +223,9 @@
                         (a3 (compile-statement (cadddr s) example-env)))
                     ;; evaluate predicate, if valid, eval a2 otherwise eval a3
                     ;; with the continuation as k
-                    (lambda (env k)
+		    (lambda (env k)	; k is passed in and
+					; continuation doesn't grow,
+					; so this is TCO safe
                       (a1 env (lambda (v1) ((if v1 a2 a3) env k))))))
                  ((lambda)
                   (let* (		; this function builds an
@@ -244,18 +250,33 @@
 			 ;; link them together into a single
 			 ;; executable function that returns the value
 			 ;; of the last s-exp.
-			 (evaled-statements (let loop ((statements compiled-statements))
-						(if (null? (cdr statements))
-                                                    ;; if this is the last statement evaluate it with continuation
-                                                    ;; as k.
-                                                    (lambda (env k) ((car statements) env k))
-                                                    (let ((r (loop (cdr statements))))
-                                                      ;; if there's more statements, evaluate this one, discard the
-                                                      ;; result and go to the next one.
-                                                      (lambda (env k) ((car statements) env (lambda (_args) (r env k)))))))))
+			 (evaled-statements
+			  (let loop ((statements compiled-statements))
+			    (if (null? (cdr statements))
+				;; if this is the last statement evaluate it with continuation
+				;; as k.
+				;;
+				;; this lambda is tail call safe since
+				;; it doesnt grow the continuation or recur.
+				(lambda (env k) ((car statements) env k))
+				(let ((r (loop (cdr statements))))
+                                  ;; if there's more statements, evaluate this one, discard the
+                                  ;; result and go to the next one.
+                                  ;;
+				  ;; this does grow the continuation,
+				  ;; but that is the desired behavior
+				  ;; here. And it doesn't use more
+				  ;; host stack.
+				  (lambda (env k)
+				    ((car statements) env (lambda (_result)
+							    (r env k)))))))))
                     ;; pass lambda to k directly
-                    (lambda (creation-env k)
-		      (k (lambda args
+                    (lambda (creation-env k) ; creation level clearly tail recursive
+		      ;; inner fn is tail recursive because the
+		      ;; continuation is an explicit argument, so no
+		      ;; overhead is incurred on this call, despite
+		      ;; recursive behavior.
+		      (k (lambda (k . args) 
 			   (unless (let loop ((params (cadr s))
 					      (args args))
 				     (cond ((null? params) (null? args))
@@ -268,7 +289,7 @@
 			   ;; environment that existed when the lambda
 			   ;; was created, not when it was compiled,
 			   ;; or when it was ran.
-                           (evaled-statements (extend-env creation-env args) identity))))))
+                           (evaled-statements (extend-env creation-env args) k))))))
                  ((define) (check-arity 2)
 		  ;; thus, define must also differentiate between
 		  ;; bound variables (whose redefinition is
@@ -301,8 +322,12 @@
 			 (rval (catch-self-def (lambda ()
 						 (compile-statement (caddr s) example-env)))))
 		    ;; eval argument, store it in env, then call k with null
-		    (lambda (env k)
-                      (rval env (lambda (r)
+                    (lambda (env k)    ; tail recursive becuase
+					; continuation doesnt grow,
+					; and we don't do any
+					; recursive work before going
+					; to k.
+		      (rval env (lambda (r) 
 				  (let ((binding (assoc (cadr s) (cadr env))))
 				    ;;  if the binding exists and has
 				    ;;  been bound, error. definition
@@ -345,7 +370,11 @@
 			 (rval (catch-self-def (lambda ()
 						 (compile-statement (caddr s) example-env)))))
 		    ;; eval argument, store it in env, then call k with null
-		    (lambda (env k)
+                    (lambda (env k)     ; tail recursive since
+					; continuation doesnt grow,
+					; and we don't do any
+					; recursive work before going
+					; to k.
                       (rval env (lambda (r)
 				  (let ((binding (assoc (cadr s) (caddr env))))
                                     ;; unlike variables, macros can be
@@ -370,7 +399,11 @@
                         (rval (compile-statement (caddr s) example-env)))
                     ;; eval argument, store it in the appropriate cell
                     ;; in env, then call k with null
-		    (lambda (env k)
+                    (lambda (env k)	; tail recursive since
+					; continuation doesnt grow,
+					; and we don't do any
+					; recursive work before going
+					; to k.
 		      (rval env (lambda (r)
                                   ;; variables must exist for them
 				  ;; to be settable. unbound
@@ -407,13 +440,14 @@
 		 ((call/cc) (check-arity 1)
 		  ;; compile the lambda 2nd argument
 		  (let ((fn (compile-statement (cadr s) example-env)))
+                    ;; tail recursive since the continuation doesn't grow
 		    (lambda (env k)
-		      (k (fn env	; evaluate the lambda, get the
-					; actual thing in f
-			     (lambda (f)
-			       ;; pass a continuation into f.
-			       (f (lambda (v)
-				    (raise-exception (list 'jump (k v)))))))))))
+		      (fn env	; evaluate the lambda, get the
+			  ;; actual thing in f
+			  (lambda (f)
+			    ;; pass a continuation into f.
+			    (f k (lambda (v)
+				   (raise-exception (list 'jump (k v))))))))))
 		 ((eval) (check-arity 1)
 		  ;;  eval can only run in the global scope. This is a
 		  ;;  concious design choice, since without local
@@ -422,6 +456,7 @@
 		  ;;  impossible to determine the location of all
 		  ;;  variables at compile-time.
 		  (let ((code (compile-statement (cadr s) example-env)))
+                    ;; k is passed to caller, this is tail-recursive.
 		    (lambda (env k)
 		      ((compile-statement (code env identity) (cons #() (cdr env)))
 		       (cons #() (cdr env))
@@ -449,11 +484,16 @@
 						   (r (eval-args (cdr args))))
 					       (cps f r (cons f r)))))))
 		     (let ((evaled-args (eval-args args)))
-		       ;; eval the function, then eval the
-		       ;; args, then apply the fn and pass
-		       ;; the result to k
-		       (cps fn evaled-args (apply fn evaled-args))))
+		       ;; eval the function, then eval the args, then
+		       ;; apply the fn and pass k to it. If apply is
+		       ;; tail recursive this is tail recursive 
+		       (lambda (env k)
+			 (fn env (lambda (fn)
+				   (evaled-args env (lambda (evaled-args)
+						      (apply fn k evaled-args))))))))
 		   (let* ((macro (cadr (assoc (car s) (caddr example-env))))
 			  (args (cdr s))
 			  (expansion (apply macro args)))
 		     (compile-statement expansion example-env)))))))))
+
+
