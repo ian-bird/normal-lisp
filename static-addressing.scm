@@ -394,41 +394,51 @@
 			       ;; that.
 			       (f (lambda (v)
 				    (raise-exception (list 'jump (k v)))))))))))
-                 (else			;fn application
-		  (cond ((symbol? (car s))
-			 (if 		; if we find the binding
-					; already defined in the
-					; global environment at
-					; compile-time or cannot find
-					; it in the macro environment,
-					;
-					; then compile it as a
-					; function like normal.
-					;
-					; otherwise expand the macro
-					; and resume compilation.
-			  (or (assoc (car s) (cadr example-env))
-				 (not (assoc (car s) (caddr example-env))))
-			  (letrec ((fn (compile-statement (car s) example-env))
-				      (args (map (lambda (s) (compile-statement s example-env))
-						 (cdr s)))
-				      (eval-args (lambda (args)
-						   (if (null? args)
-						       (lambda (env k) (k '()))
-						       (let ((f (car args))
-							     (r (eval-args (cdr args))))
-							 (lambda (env k) (f env (lambda (f)
-										  (r env (lambda (r)
-											   (k (cons f r))))))))))))
-			       (let ((evaled-args (eval-args args)))
-				 ;; eval the function, then eval the
-				 ;; args, then apply the fn and pass
-				 ;; the result to k
-				 (lambda (env k)
-				   (fn env (lambda (fn)
-					     (evaled-args env (lambda (args)
-								(k (apply fn args)))))))))
-			  (let* ((macro (cadr (assoc (car s) (caddr example-env))))
-				 (args (cdr s))
-				 (expansion (apply macro args)))
-			    (compile-statement expansion example-env)))))))))))
+		 ((eval) (check-arity 1)
+		  ;;  eval can only run in the global scope. This is a
+		  ;;  concious design choice, since without local
+		  ;;  defines could cause the lexical environment to
+		  ;;  change at runtime, which would make it
+		  ;;  impossible to determine the location of all
+		  ;;  variables at compile-time.
+		  (let ((code (compile-statement (cadr s) example-env)))
+		    (lambda (env k)
+		      ((compile-statement (code env identity) (cons #() (cdr env)))
+		       (cons #() (cdr env))
+		       k))))
+                 (else			;fn or macro application
+		  (if (or (and (symbol? (car s))
+			       (or (assoc (car s) (cadr example-env))
+				   (not (assoc (car s) (caddr example-env)))))
+			  (list? (car s)))
+		      ;; if we find the binding already defined in the
+		      ;; global environment at compile-time or cannot
+		      ;; find it in the macro environment,
+		      ;;
+		      ;; then compile it as a function like normal.
+		      ;;
+		      ;; otherwise expand the macro and resume
+		      ;; compilation.
+		      (letrec ((fn (compile-statement (car s) example-env))
+			    (args (map (lambda (s) (compile-statement s example-env))
+				       (cdr s)))
+			    (eval-args (lambda (args)
+					 (if (null? args)
+					     (lambda (env k) (k '()))
+					     (let ((f (car args))
+						   (r (eval-args (cdr args))))
+					       (lambda (env k) (f env (lambda (f)
+									(r env (lambda (r)
+										 (k (cons f r))))))))))))
+		     (let ((evaled-args (eval-args args)))
+		       ;; eval the function, then eval the
+		       ;; args, then apply the fn and pass
+		       ;; the result to k
+		       (lambda (env k)
+			 (fn env (lambda (fn)
+				   (evaled-args env (lambda (args)
+						      (k (apply fn args)))))))))
+		   (let* ((macro (cadr (assoc (car s) (caddr example-env))))
+			  (args (cdr s))
+			  (expansion (apply macro args)))
+		     (compile-statement expansion example-env)))))))))
