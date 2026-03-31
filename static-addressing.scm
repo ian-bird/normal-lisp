@@ -370,6 +370,29 @@
 				      (error (string-append "cannot set unbound variable "
 							    (symbol->string (cadr s)))))
                                   (k '()))))))
+		 ;; call/cc is a full implementation of the
+		 ;; feature. Continuations are re-entrant, and save
+		 ;; the full context. This is because at the point
+		 ;; lambda (env k) is called, we have the true, pure
+		 ;; continuation for the rest of the computation at
+		 ;; this point.
+		 ;;
+		 ;; as long as code runs under a top level that can
+		 ;; catch the raised exception for jump, we will have
+		 ;; the correct behavior.
+		 ;;
+		 ;; However, if this continuation is ever called, we
+		 ;; want to immediately return the resulting value of
+		 ;; from it. No moe work will be done here, we just
+		 ;; need to jump out of the program completely and
+		 ;; immediately return the result of that call. Hence
+		 ;; the raise-exception, which is used here as a long
+		 ;; jump to the return point of this expression.
+		 ;;
+		 ;; in this way, you can think of the raise-exception
+		 ;; as being the result continuation. We pass v to k
+		 ;; and pass k to the final result continuation, and
+		 ;; we're done.
 		 ((call/cc) (check-arity 1)
 		  ;; compile the lambda 2nd argument
 		  (let ((fn (compile-statement (cadr s) example-env)))
@@ -377,21 +400,7 @@
 		      (k (fn env	; evaluate the lambda, get the
 					; actual thing in f
 			     (lambda (f)
-			       ;; pass a continuation into f. This
-			       ;; works because the current
-			       ;; continuation is already fully
-			       ;; reified due to the design of the
-			       ;; interpreter. However, if this
-			       ;; function is ever called, we need to
-			       ;; take the result and return it
-			       ;; immediately, no matter where we
-			       ;; are. The other optional path of flow
-			       ;; continuing as normal is aborted, and
-			       ;; since we have the result already
-			       ;; from the alternate path to k, we
-			       ;; just need to jump out of the
-			       ;; computation entirely and return
-			       ;; that.
+			       ;; pass a continuation into f.
 			       (f (lambda (v)
 				    (raise-exception (list 'jump (k v)))))))))))
 		 ((eval) (check-arity 1)
