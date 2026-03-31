@@ -142,6 +142,21 @@
 	    ((compile-statement s env) runtime-env k))))
       #:unwind? #t)))
 
+(define-syntax cps
+  (syntax-rules ()
+    ((_ (external-name result-name) (external-name* result-name*)... final-form)
+     (lambda (env k)
+       (external-name env (lambda (result-name)
+			    (cps env k (external-name* result-name*)... final-form)))))
+    ((_  final-form)
+     (lambda (_ k)
+       (k final-form)))
+    ((_  env k (external-name result-name) (external-name* result-name*)... final-form)
+     (external-name env (lambda (result-name)
+			  (cps env k (external-name* result-name*)... final-form))))
+    ((_ _ k final-form)
+     (k final-form))))
+
 ;; analyzes the code, combining lambdas into a fn that produces the
 ;; desired behavior.  compiling thus splits syntactical analysis /
 ;; symbol location from executing the code.
@@ -179,29 +194,26 @@
 			 (cadr p)))))))
           ((any? (lambda (proc) (proc s)) (list boolean? string? number?) )
            ;; self-evaluating. pass value to k directly.
-           (lambda (_env k) (k s)))
+	   (cps s))
           ((list? s)
            (case (car s)
                  ((quote) (check-arity 1)
                   (let ((v (cadr s)))
                     ;; pass 2nd value to k directly.
-                    (lambda (_env k) (k v))))
+		    (cps v)))
                  ((car) (check-arity 1)
                   (let ((a1 (compile-statement (cadr s) example-env)))
                     ;; evaluate argument, car it, then pass to k.
-                    (lambda (env k)
-                      (a1 env (lambda (v1) (k (car v1)))))))
+		    (cps (a1 v1) (car v1))))
                  ((cdr) (check-arity 1)
                   (let ((a1 (compile-statement (cadr s) example-env)))
                     ;; evaluate argument, cdr it, then pass to k.
-                    (lambda (env k)
-                      (a1 env (lambda (v1) (k (cdr v1)))))))
+                    (cps (a1 v1) (cdr v1))))
                  ((cons) (check-arity 2)
                   (let ((a1 (compile-statement (cadr s) example-env))
                         (a2 (compile-statement (caddr s) example-env)))
                     ;; evaluate both args, cons them, then pass to k.
-                    (lambda (env k)
-                      (a1 env (lambda (v1) (a2 env (lambda (v2) (k (cons v1 v2)))))))))
+                    (cps (a1 v1) (a2 v2) (cons v1 v2))))
                  ((if) (check-arity 3)
                   (let ((a1 (compile-statement (cadr s) example-env))
                         (a2 (compile-statement (caddr s) example-env))
@@ -359,17 +371,17 @@
                         (rval (compile-statement (caddr s) example-env)))
                     ;; eval argument, store it in the appropriate cell
                     ;; in env, then call k with null
-                    (lambda (env k)
-                      (rval env (lambda (r)
-				  ;; variables must exist for them to
-				  ;; be settable. unbound variables
-				  ;; dont really exist, so we cant use
-				  ;; them either.
+		    (lambda (env k)
+		      (rval env (lambda (r)
+                                  ;; variables must exist for them
+				  ;; to be settable. unbound
+				  ;; variables dont really exist, so
+				  ;; we cant use them either.
 				  (if (and (find-pair env) (not (null? (cdr (find-pair env)))))
-                                      (set-cdr! (find-pair env) (list r))
+				      (set-cdr! (find-pair env) (list r))
 				      (error (string-append "cannot set unbound variable "
 							    (symbol->string (cadr s)))))
-                                  (k '()))))))
+				  '())))))
 		 ;; call/cc is a full implementation of the
 		 ;; feature. Continuations are re-entrant, and save
 		 ;; the full context. This is because at the point
@@ -433,20 +445,15 @@
 				       (cdr s)))
 			    (eval-args (lambda (args)
 					 (if (null? args)
-					     (lambda (env k) (k '()))
+					     (cps '())
 					     (let ((f (car args))
 						   (r (eval-args (cdr args))))
-					       (lambda (env k) (f env (lambda (f)
-									(r env (lambda (r)
-										 (k (cons f r))))))))))))
+					       (cps (f f) (r r) (cons f r)))))))
 		     (let ((evaled-args (eval-args args)))
 		       ;; eval the function, then eval the
 		       ;; args, then apply the fn and pass
 		       ;; the result to k
-		       (lambda (env k)
-			 (fn env (lambda (fn)
-				   (evaled-args env (lambda (args)
-						      (k (apply fn args)))))))))
+		       (cps (fn fn) (evaled-args args) (apply fn args))))
 		   (let* ((macro (cadr (assoc (car s) (caddr example-env))))
 			  (args (cdr s))
 			  (expansion (apply macro args)))
