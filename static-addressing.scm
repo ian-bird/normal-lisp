@@ -414,22 +414,12 @@
 		 ;; continuation for the rest of the computation at
 		 ;; this point.
 		 ;;
-		 ;; as long as code runs under a top level that can
-		 ;; catch the raised exception for jump, we will have
-		 ;; the correct behavior.
-		 ;;
-		 ;; However, if this continuation is ever called, we
-		 ;; want to immediately return the resulting value of
-		 ;; from it. No moe work will be done here, we just
-		 ;; need to jump out of the program completely and
-		 ;; immediately return the result of that call. Hence
-		 ;; the raise-exception, which is used here as a long
-		 ;; jump to the return point of this expression.
-		 ;;
-		 ;; in this way, you can think of the raise-exception
-		 ;; as being the result continuation. We pass v to k
-		 ;; and pass k to the final result continuation, and
-		 ;; we're done.
+		 ;; since we take a continuation as an explicit
+		 ;; parameter in all lambbas, we can simply ignore the
+		 ;; continuation and return the result of passing v to
+		 ;; the saved continuation, which will short-circuit
+		 ;; all future work and return the end result of
+		 ;; following that continuation instead.
 		 ((call/cc) (check-arity 1)
 		  ;; compile the lambda 2nd argument
 		  (let ((fn (compile-statement (cadr s) example-env)))
