@@ -457,7 +457,5 @@
 						      (apply fn k evaled-args))))))))
 		   (let* ((macro (cadr (assoc (car s) (caddr example-env))))
 			  (args (cdr s))
-			  (expansion (apply macro args)))
+			  (expansion (apply macro identity args)))
 		     (compile-statement expansion example-env)))))))))
-
-
