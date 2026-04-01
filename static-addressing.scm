@@ -415,11 +415,10 @@
 		 ;; this point.
 		 ;;
 		 ;; since we take a continuation as an explicit
-		 ;; parameter in all lambbas, we can simply ignore the
-		 ;; continuation and return the result of passing v to
-		 ;; the saved continuation, which will short-circuit
-		 ;; all future work and return the end result of
-		 ;; following that continuation instead.
+		 ;; parameter in all lambdas, all we have to do is
+		 ;; place the current continuation k into a box so
+		 ;; that calling it with some value directs the flow
+                 ;; back to k rather than the closure's lexical continuation.
 		 ((call/cc) (check-arity 1)
 		  ;; compile the lambda 2nd argument
 		  (let ((fn (compile-statement (cadr s) example-env)))
@@ -429,8 +428,7 @@
 			  ;; actual thing in f
 			  (lambda (f)
 			    ;; pass a continuation into f.
-			    (f k (lambda (_ v)
-				   (k v))))))))
+			    (f k (lambda (_ v) (k v))))))))
 		 ((eval) (check-arity 1)
 		  ;;  eval can only run in the global scope. This is a
 		  ;;  concious design choice, since without local
