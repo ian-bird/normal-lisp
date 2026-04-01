@@ -85,10 +85,6 @@
 ;;  capability to handle the unbound, the appropriate warning is
 ;;  emited and control passes back to the point where the warning was
 ;;  raised.
-;;
-;; This also creates the point for non-local exits to be taken after a
-;; reified continuation returns a final value, and propogates all
-;; other exceptions further up.
 (define (comp s env)
   (lambda (runtime-env k)
     (with-exception-handler
