@@ -197,20 +197,7 @@
                   (let ((v (cadr s)))
                     ;; pass 2nd value to k directly.
 		    (cps v)))
-                 ((car) (check-arity 1)
-                  (let ((a1 (compile-statement (cadr s) example-env)))
-                    ;; evaluate argument, car it, then pass to k.
-		    (cps a1 (car a1))))
-                 ((cdr) (check-arity 1)
-                  (let ((a1 (compile-statement (cadr s) example-env)))
-                    ;; evaluate argument, cdr it, then pass to k.
-                    (cps a1 (cdr a1))))
-                 ((cons) (check-arity 2)
-                  (let ((a1 (compile-statement (cadr s) example-env))
-                        (a2 (compile-statement (caddr s) example-env)))
-                    ;; evaluate both args, cons them, then pass to k.
-                    (cps a1 a2 (cons a1 a2))))
-                 ((if) (check-arity 3)
+		 ((if) (check-arity 3)
                   (let ((a1 (compile-statement (cadr s) example-env))
                         (a2 (compile-statement (caddr s) example-env))
                         (a3 (compile-statement (cadddr s) example-env)))
