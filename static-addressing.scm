@@ -93,23 +93,16 @@
   (lambda (runtime-env k)
     (with-exception-handler
 	(lambda (exn)
-	  (unless (and (list? exn) (eq? (car exn) 'jump))
+	  (unless (symbol? exn)
 	    (raise-exception exn))
-	  (cadr exn))
+	  (if (with-exception-handler
+		  (lambda (exn) #f)
+		(lambda () (eval exn (current-module)) #t)
+		#:unwind? #t)
+	      (format #t "warning: using host environment variable '~a'\n" exn)
+	      (format #t "warning: potentially unbound variable '~a'\n" exn)))
       (lambda ()
-	(with-exception-handler
-	    (lambda (exn)
-	      (unless (symbol? exn)
-		(raise-exception exn))
-	      (if (with-exception-handler
-		      (lambda (exn) #f)
-		    (lambda () (eval exn (current-module)) #t)
-		    #:unwind? #t)
-		  (format #t "warning: using host environment variable '~a'\n" exn)
-		  (format #t "warning: potentially unbound variable '~a'\n" exn)))
-	  (lambda ()
-	    ((compile-statement s env) runtime-env k))))
-      #:unwind? #t)))
+	((compile-statement s env) runtime-env k)))))
 
 (define (run-code . statements)
   (let ((env (list #() '() '()))
@@ -446,8 +439,8 @@
 			  ;; actual thing in f
 			  (lambda (f)
 			    ;; pass a continuation into f.
-			    (f k (lambda (v)
-				   (raise-exception (list 'jump (k v))))))))))
+			    (f k (lambda (_ v)
+				   (k v))))))))
 		 ((eval) (check-arity 1)
 		  ;;  eval can only run in the global scope. This is a
 		  ;;  concious design choice, since without local
