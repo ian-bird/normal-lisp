@@ -46,24 +46,26 @@
 					; eval block, it no longer will be.
 	    (let ((a1 (default-eval (cadr exp)
 			 env (cons `((reflect ,(cadr exp)) 1) stack-model))))
-	      (raise-exception `(reflect (',a1 ',env ',stack-model)))))
+	      (raise-exception `(reflect (,(cadr exp) ',env ',stack-model)))))
 	   ((eval)  
 	    (let* ((a1 (default-eval (cadr exp) env (cons `(,exp 1) stack-model)))
 		   (a2 (default-eval (caddr exp) env (cons `((eval ,a1 ,(caddr exp)) 2)
 							   stack-model)))
-		   (a3 (default-eval (cadddr exp) env (cons `((eval ,a1 ,a2 ,(cadddr exp)) 3)
-							    stack-model))))
-	      (with-exception-handler
+		   (a3 (default-eval (cadddr exp)
+			 env
+			 (cons `((eval ,a1 ,a2 ,(cadddr exp)) 3)
+			       stack-model))))
+              (with-exception-handler
 		  ;; support returning to object level from
 		  ;; the sub-object level while retaining
 		  ;; context
 		  (lambda (exn)
-		    (if (and (list? exn)
+                    (if (and (list? exn)
 			     (eq? (car exn) 'reflect))
 			(default-eval (cadr exn) env '())
 			(raise-exception exn)))
 		(lambda ()
-		  (finish-computation a1 a2 a3))
+		  (finish-computation a1 a2 (default-eval a3 a2 '())))
 		#:unwind? #t)))
 	   (else (let* ((proc (default-eval (car exp) env (cons `(,exp 0) stack-model)))
 			(args (do ((evaluated '() (cons (default-eval (car args)
@@ -137,6 +139,8 @@
 							(default-eval (caddr expr) env (cdr stack-model))
 							(caddr expr))
 						    (car env)))))
+	    ((reflect) (if (< i 2) (continue)
+			   (raise-exception `(reflect (',(cadr exp) ',env ',stack-model)) )))
 	    (else
 	     (if (= i (length expr))
 		 (default-apply (car expr) (cdr expr)
