@@ -1,3 +1,8 @@
+(define (nth n seq)
+  (if (zero? n)
+      (car seq)
+      (nth (1- n) (cdr seq))))
+
 (define (reflective-eval exp env stack-model)
   (with-exception-handler
       ;; build meta environment on demand if requested
@@ -13,7 +18,10 @@
 (define (default-eval exp env stack-model)
   (cond ((or (number? exp) (boolean? exp) (string? exp))
 	 exp)
-	((symbol? exp)  (cdr (assoc exp (apply append env))))
+	((symbol? exp) (let ((it (assoc exp (apply append env))))
+			 (if it
+			     (cdr it)
+			     (raise-exception (format #f "failed to locate ~a" exp)))))
 	((list? exp)
 	 (case (car exp)
 	   ;; quote is tail recursive so no stack frame is generated
@@ -36,16 +44,20 @@
 	   ;; generating a lambda can be done without a stack
 	   ((lambda) `((env . ,env)
 		       (params . ,(cadr exp))
-		       (body . ,(cddr exp))))
-	   ((define) (let ((a1 (default-eval (caddr exp) env (cons `((define ,(cadr exp) ,(caddr exp)) 2) stack-model))))
-		       (set-car! env (acons (cadr exp) a1 (car env)))))
+		       (body . (begin ,@(cddr exp)))))
+	   ((begin) (do ((statements (cdr exp) (cdr statements))
+			 (i 1 (1+ i)))
+			((null? (cdr statements)) (default-eval (car statements)
+						    env
+						    `((,exp ,i) ,@stack-model)))
+			(default-eval (car statements) env `((,exp ,i) ,@stack-model))))
 	   ((reflect) 		; reflection reifies the
 					; execution state and env, and passes them explicitly to
 					; the arg which executes in the immediate
 					; meta-level. I.e., if this code is running inside an
 					; eval block, it no longer will be.
-	    (let ((a1 (default-eval (cadr exp)
-			 env (cons `((reflect ,(cadr exp)) 1) stack-model))))
+            (let ((a1 (default-eval (cadr exp)
+			env (cons `((reflect ,(cadr exp)) 1) stack-model))))
 	      (raise-exception `(reflect (,(cadr exp) ',env ',stack-model)))))
 	   ((eval)  
 	    (let* ((a1 (default-eval (cadr exp) env (cons `(,exp 1) stack-model)))
@@ -81,9 +93,7 @@
 (define (default-apply proc args stack-model)
   (let ((new-env (cons (map cons (cdr (assoc 'params proc)) args)
 		       (cdr (assoc 'env proc)))))
-    (car (reverse (map (lambda (statement)
-                         (default-eval statement new-env stack-model))
-		       (cdr (assoc 'body proc)))))))
+    (default-eval (cdr (assoc 'body proc)) new-env stack-model)))
 
 (define (substitute list n v)
   (do ((list list (cdr list))
@@ -102,10 +112,10 @@
 	       (next-expr (if (>= (1+ i) (length expr)) #f (nth (1+ i) expr)))
 	       (continue (lambda ()
                            (let* ((next-stack `((,(substitute expr i result) ,(1+ i)) ,@(cdr stack-model)))
-				  (next-val (if (>= (length expr) (1+ i))
-						(compute next-stack '())
-						(default-eval (nth (1+ i) expr) env next-stack))))
-			     (compute next-stack next-val)))))
+				  (next-val (if (> (length expr) (1+ i))
+						(default-eval (nth (1+ i) expr) env next-stack)
+						(compute next-stack '()))))
+                             (compute next-stack next-val)))))
           (case (car expr)
 	    ((car) (if (< i 2) (continue)
 		       (compute (cdr stack-model)
@@ -133,16 +143,16 @@
 		       (compute (cdr stack-model)
 				(eq? (cadr expr)
 				     (caddr expr)))))
-	    ((define) (compute (cdr stack-model)
-			       (set-car! env (acons (cadr exp)
-						    (if (< i 2)
-							(default-eval (caddr expr) env (cdr stack-model))
-							(caddr expr))
-						    (car env)))))
-	    ((reflect) (if (< i 2) (continue)
+	    ((reflect) 
+	     (if (< i 2) (continue)
 			   (raise-exception `(reflect (',(cadr exp) ',env ',stack-model)) )))
-	    (else
-	     (if (= i (length expr))
-		 (default-apply (car expr) (cdr expr)
-		   (cdr stack-model))
-		 (continue))))))))
+	    ((begin)
+	     (if (< i (1- (length expr))) (continue)
+		 (compute (cdr stack-model)
+			  result)))
+	    (else (if (= i (length expr))
+		      (default-apply (car expr) (cdr expr)
+			(cdr stack-model)))))))))
+
+
+
